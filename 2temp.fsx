@@ -7,49 +7,55 @@ open Akka.Configuration
 open Akka.FSharp
 open Akka.TestKit
 
-type Message = 
-    | START of int * int
+type BossMessage = 
+    | START of int * string * string
     | DONE
 
-type Node = 
+type NodeType = 
     | GOSSIP of string
     | PUSHSUM of double * double
 
 // let system = System.create "system" (Configuration.defaultConfig())
 let system = ActorSystem.Create("FSharp")
 
-let node = 
+let mutable nodes = [int, [int]]
+let mutable count = 0
+let nodesFull(n: int) =
+    printfn "full"
+    // for i in 0 .. (n - 1) do
+    //     count[i] = 0
+    //     let mutable ls = [int]
+    //     for j in 0 .. (n - 1) do
+    //         if i <> j then ls <- j +: ls
+    //     nodes.[i] = ls
 
-let worker = 
-    spawn system "worker"
-    <| fun childMailbox ->
-        let rec childLoop() = 
-            actor {
-                let! ProcessJob(s,e) = childMailbox.Receive ()
-                let sum1 = int64 (List.sumBy sqrtOf [s .. e])    
-                let right = int64 (sqrt(double sum1) + 0.5)
+let nodes2d (n: int) = 
+    printfn "2d"
+    
+let nodesLine (n: int) = 
+    printfn "line"
+    // for i in 0 .. (n - 1) do
+    //     count.[i] = 0
+    //     if i = 0 then nodes.[i] <- [i + 1]
+    //     elif (i = n - 1) then nodes.[i] <- List(i - 1)
+    //     else nodes.[i] <- List(i - 1, i + 1)
 
-                if isSqrt right sum1 then
-                    printfn "ans: %u" s
-                    
-                childMailbox.Sender() <! DONE
-                return! childLoop()
-            }
-        childLoop()
+let nodesImp2d (n: int) = 
+    printfn "imp 2d la"
 
-let worker (workerMailbox:Actor<WorkerMessage>) = 
+let node (nodeMailbox:Actor<NodeType>) = 
     let rec loop () = actor {
-        let! (msg: WorkerMessage) = workerMailbox.Receive()
+        let! (msg: NodeType) = nodeMailbox.Receive()
         match msg with
-        | Work msg->                                     
-            let startPoint: int = msg.[0]
-            let endPoint: int = msg.[1]
-            let nNums: int = msg.[2]
-            for i = startPoint to endPoint do
-                let ans: int = compute(i, nNums)
-                // if ans <> 0 then
-                //     printfn "%d" ans
-                workerMailbox.Sender() <! Finished ans
+        | GOSSIP msg ->
+            printfn "node gg"
+            // let rumor: string = msg.[0]                               
+            // nodeMailbox.Sender() <! DONE rumor
+        | PUSHSUM (s, w) ->
+            printfn "node ps"
+            // let sum: double = msg.[0]
+            // let weight: double = msg.[1]
+            // nodeMailbox.Sender() <! DONE sum
         return! loop ()
     }
     loop ()
@@ -57,18 +63,23 @@ let worker (workerMailbox:Actor<WorkerMessage>) =
 let boss = 
     spawn system "boss" 
     <| fun bossMailbox ->
-        let mutable count = 0
         let rec bossLoop() =
             actor {
-                let! (msg: Message) = bossMailbox.Receive()
-                let sender = bossMailbox.Sender()
+                let! (msg: BossMessage) = bossMailbox.Receive()
                 match msg with
-                | START (x, y) ->
-                    for i in 1 .. x do
-                        let s = int64 i
-                        let e = int64 (i + y - 1)
-                        worker <! ProcessJob(s,e)
-                        count <- count + 1
+                | START (n, t, a) ->
+                    match t with 
+                    | "full" -> nodesFull(n)
+                    | "2D" -> nodes2d(n)
+                    | "line" -> nodesLine(n)
+                    | "imp2D" -> nodesImp2d(n)
+                    | _ -> printfn "Wrong Topology Type"
+                    
+                    match a with
+                    | "gossip" -> printfn "gossip la"
+                    | "push-sum" -> printfn "push-sum la"
+                    | _ -> printfn "Wrong Algorithm Type"
+
                     
                 | DONE -> 
                     count <- count - 1
@@ -82,11 +93,12 @@ let boss =
 
 let main() =
     let args = System.Environment.GetCommandLineArgs()
-    let n = int args.[3]
-    let k = int args.[4]
+    let numsOfNodes = int args.[3]
+    let topology = string args.[4]
+    let alg = string args.[5]
     for timeout in [1000000] do
         try
-            let task = (boss <? START (n, k))
+            let task = (boss <? START (numsOfNodes, topology, alg))
             Async.RunSynchronously (task, timeout)
 
         with :? TimeoutException ->
