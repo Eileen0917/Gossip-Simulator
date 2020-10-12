@@ -14,24 +14,19 @@ type BossMessage =
     | PDONE of string * int * double
 
 type NodeType = 
+    | INIT of int list * int
     | GOSSIP of string
-    | PUSHSUM of double * double
+    | GOSSIPMYSELF of string
+    | PUSHSUM of double * double 
 
 // let system = System.create "system" (Configuration.defaultConfig())
 let system = ActorSystem.Create("FSharp")
 
 // global variables
-// [<AutoOpen>]
-// module Globals =
-//     let nodes = System.Collections.Generic.Dictionary<int,List<int>>()
-//     let mutable globalCount = System.Collections.Generic.Dictionary<int,int>()
-// let mutable nodes = Map.empty<int, list<int>>
-// let mutable globalCount = Map.empty<int, int>
 let mutable globalTime: int64 = int64 0
 
 // functions of topology
 let buildTopo(t:string, n: int): Dictionary<int, int list> = 
-    // let mutable nodes = Map.empty<int, list<int>>
     let nodes = System.Collections.Generic.Dictionary<int,int list>()
 
     match t with 
@@ -73,7 +68,7 @@ let buildTopo(t:string, n: int): Dictionary<int, int list> =
 
             let mutable macG = Random().Next(n)
 
-            while List.contains macG ls do
+            while List.contains macG ls || macG = i do
                 macG <- Random().Next(n)
 
             ls <- macG :: ls
@@ -84,35 +79,42 @@ let buildTopo(t:string, n: int): Dictionary<int, int list> =
     
 
 let node (nodeMailbox:Actor<NodeType>) = 
+    let bossActor = select ("akka://FSharp/user/boss") system
+    let mutable count = 0
+    let mutable nodeIndex: int = -1
+    let mutable count: int = 0
+    let mutable neighbors = List.empty<int>
+
     let rec loop () = actor {
         let! (msg: NodeType) = nodeMailbox.Receive()
-        // let mutable flag = 0
-        // let mutable s = n
-        // let mutable w = 1
-        // let slidingWindow = Queue.empty<Double>
-        // slidingWindow.Enqueue(10000)
-        // slidingWindow.Enqueue(10000)
 
         match msg with
-        | GOSSIP (str) ->
-            printfn "node gg"
-            // let rumor: string = msg.[0]                               
-            // nodeMailbox.Sender() <! DONE rumor
-            // if count < 10 then 
-            //     count <- count + 1
-            //     globalCount.[n] <- globalCount.[n] + 1
+        |INIT (neis, index) ->
+            neighbors <- neis @ neighbors
+            nodeIndex <- index
+            
+        | GOSSIP str ->
+            if count < 10 then 
+                count <- count + 1
 
-            //     if count = 10 then
-            //         boss <! GDONE
+                if count = 10 then
+                    bossActor <! GDONE
                 
-            //     let random:int = Random().Next(len)
-            //     let nei:int = nodes.[n].[random]
+                let random:int = Random().Next(neighbors.Length)
+                let nei:int = neighbors.[random]
 
-            //     // let mixPath s = "../Node" + nei
-            //     select ("../Node" + nei) system <! "Hello"
-            //     select ("../Node" + n) system <! "Hello"
-            // else
-            //     sender <! GIDONE (len, n)
+                let neighborActor = select ("akka://FSharp/user/node" + string nei) system
+                let selfActor = select ("akka://FSharp/user/node" + string nodeIndex) system
+                neighborActor <! GOSSIP str
+                selfActor <! GOSSIPMYSELF str
+            else
+                nodeMailbox.Sender() <! GDONE
+
+        | GOSSIPMYSELF str ->
+            let random:int = Random().Next(neighbors.Length)
+            let nei:int = neighbors.[random]
+            let neighborActor = select ("akka://FSharp/user/node" + string nei) system
+            neighborActor <! GOSSIP str
 
         | PUSHSUM (sum, weight) ->
             printfn "node ps"
@@ -158,37 +160,34 @@ let node (nodeMailbox:Actor<NodeType>) =
 let boss = 
     spawn system "boss" 
     <| fun bossMailbox ->
+        let mutable count = 0
+        let mutable numNodes = 0
         let rec bossLoop() =
             actor {
                 let! (msg: BossMessage) = bossMailbox.Receive()
-                let mutable n = 0
-                let mutable keepTrack = Array.create n 0.0
-                let mutable count = 0
+
                 match msg with
                 | START (n, t, a) ->
-                    let mutable x = Array.init n (fun i -> spawn system ("node"+ string(i)) node)
+                    numNodes <- n
+                    let mutable nodeActArr = Array.init n (fun i -> spawn system ("node"+ string(i)) node)
                     let topoMap = buildTopo(t, n)
 
                     globalTime <- Environment.TickCount64
-                    let len = List.length topoMap.[0]
+                    for i = 0 to (numNodes - 1) do
+                        // printfn "neis %i %A" i topoMap.[i]
+                        nodeActArr.[i] <! INIT (topoMap.[i], i)
                     
                     match a with
-                    | "gossip" -> x.[0] <! ("Hello", len, n)
-                    | "push-sum" -> x.[0] <! (0.0,1.0, len, n)
+                    | "gossip" -> nodeActArr.[0] <! GOSSIP "Hello!"
+                    | "push-sum" -> nodeActArr.[0] <! PUSHSUM (0.0,1.0)
                     | _ -> bossMailbox.Sender() <! "Wrong Algorithm Type"
                     
-                | GDONE -> 
-                    // bossMailbox.Sender() <! "Done"
-                    // count <- count - 1
-                    // if count = 0 then 
-                    //     printfn "DONE"
-                    //     Environment.Exit 1
-                    // count <- count + 1
-                    // if count = n then
-                    //     printfn "GOSSIP DONE"
-                    //     printfn "Time taken is %u" (Environment.TickCount - globalTime)
-                    //     Environment.Exit 1
-                    printfn "gdone"
+                | GDONE->    
+                    count <- count + 1
+                    if count = numNodes then
+                        printfn "GOSSIP DONE"
+                        printfn "Time taken is %u" (Environment.TickCount64 - globalTime)
+                        Environment.Exit 1
                 
                 | PDONE (str, id, ratio) ->
                     // count <- count + 1
