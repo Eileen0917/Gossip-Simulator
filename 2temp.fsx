@@ -10,14 +10,16 @@ open Akka.TestKit
 
 type BossMessage = 
     | START of int * string * string
-    | GDONE
-    | PDONE of string * int * double
+    | GOSSIPDONE
+    | PUSHSUMDONE of int * double
 
 type NodeType = 
     | INIT of int list * int
     | GOSSIP of string
     | GOSSIPMYSELF of string
     | PUSHSUM of double * double 
+    | GDONE of int * string
+    | PSDONE of int * double * double
 
 // let system = System.create "system" (Configuration.defaultConfig())
 let system = ActorSystem.Create("FSharp")
@@ -84,21 +86,29 @@ let node (nodeMailbox:Actor<NodeType>) =
     let mutable nodeIndex: int = -1
     let mutable count: int = 0
     let mutable neighbors = List.empty<int>
+    
+    let mutable s:double = 0.0
+    let mutable w:double = 1.0
+    let mutable currRatio:double = 0.0
+    let mutable pushCount: int = 1
+    let mutable flag: int = 0
+
 
     let rec loop () = actor {
         let! (msg: NodeType) = nodeMailbox.Receive()
 
         match msg with
-        |INIT (neis, index) ->
+        | INIT (neis, index) ->
             neighbors <- neis @ neighbors
             nodeIndex <- index
+            s <- double(neighbors.Length)
             
         | GOSSIP str ->
             if count < 10 then 
                 count <- count + 1
 
                 if count = 10 then
-                    bossActor <! GDONE
+                    bossActor <! GOSSIPDONE
                 
                 let random:int = Random().Next(neighbors.Length)
                 let nei:int = neighbors.[random]
@@ -108,7 +118,8 @@ let node (nodeMailbox:Actor<NodeType>) =
                 neighborActor <! GOSSIP str
                 selfActor <! GOSSIPMYSELF str
             else
-                nodeMailbox.Sender() <! GDONE
+                let selfActor = select ("akka://FSharp/user/node" + string nodeIndex) system
+                selfActor <! GDONE (nodeIndex, str)
 
         | GOSSIPMYSELF str ->
             let random:int = Random().Next(neighbors.Length)
@@ -116,42 +127,48 @@ let node (nodeMailbox:Actor<NodeType>) =
             let neighborActor = select ("akka://FSharp/user/node" + string nei) system
             neighborActor <! GOSSIP str
 
+        | GDONE (idx, str) -> 
+            let random:int = Random().Next(neighbors.Length)
+            let nei:int = neighbors.[random]
+            let neighborActor = select ("akka://FSharp/user/node" + string nei) system
+            neighborActor <! GOSSIP str
+
         | PUSHSUM (sum, weight) ->
-            printfn "node ps"
-            // let sum: double = msg.[0]
-            // let weight: double = msg.[1]
-            // nodeMailbox.Sender() <! DONE sum
-            // if flag = 0 then
-            //     s <- s + sum
-            //     w <- w + weight
-            //     let ratio = (s / w)
-            //     s <- s / 2
-            //     w <- w / 2
-            //     slidingWindow.Enqueue(ratio)
+            if flag = 0 then
+                s <- s + sum
+                w <- w + weight
+                let mutable ratio:double = (s / w)
+                s <- s / 2.0
+                w <- w / 2.0
 
-            //     if (abs(slidingWindow.head - slidingWindow.last) <= 0.001) then
-            //         flag <- 1
-            //         nodeMailbox.Sender() <! (PDONE ("done", n, ratio))
-                
+                let diff: double = abs(currRatio - ratio)
 
-            //     slidingWindow.Dequeue()
-            //     let ran1:int = Random().Next(len)
-            //     let nei1:int = nodes.[n].[ran1]
+                if diff <= 10.0 ** -3.0 then
+                    pushCount <- pushCount + 1
+                    if pushCount = 1 then
+                        flag <- 1
+                        bossActor <! PUSHSUMDONE (nodeIndex, ratio)
+                else
+                    pushCount <- 0
 
-            //     select ("../Node" + nei) system <! (s, w)
-            //     select ("../Node" + n) system <! (s, w)
-            // else
-            //     sender <! PIDONE (sum, weight, len, n)
+                currRatio <- ratio
 
-        // | GIDONE (len, n) ->
-            // let random:int = Random().Next(len)
-            // let nei:int = nodes.[n].[random]
-            // select ("../Node" + nei) system <! "Hello"
+                let random:int = Random().Next(neighbors.Length)
+                let nei:int = neighbors.[random]
+                let neighborActor = select ("akka://FSharp/user/node" + string nei) system
+                let selfActor = select ("akka://FSharp/user/node" + string nodeIndex) system
+                neighborActor <! PUSHSUM (s, w)
+                selfActor <! PUSHSUM (s, w)
 
-        // | PIDONE (sum1, weight1, len, n) ->
-            // let random1:int = Random().Next(len)
-            // let nei1:int = nodes.[n].[random1]
-            // select ("../Node" + nei1) system <! (sum1, weight1);
+            else
+                let selfActor = select ("akka://FSharp/user/node" + string nodeIndex) system
+                selfActor <! PSDONE (nodeIndex, sum, weight)
+
+        | PSDONE (idx, sum, weight) ->
+            let random:int = Random().Next(neighbors.Length)
+            let nei:int = neighbors.[random]
+            let neighborActor = select ("akka://FSharp/user/node" + string nei) system
+            neighborActor <! PUSHSUM (sum, weight)
 
         return! loop ()
     }
@@ -162,6 +179,7 @@ let boss =
     <| fun bossMailbox ->
         let mutable count = 0
         let mutable numNodes = 0
+        let mutable keepTrack = System.Collections.Generic.Dictionary<int,double>()
         let rec bossLoop() =
             actor {
                 let! (msg: BossMessage) = bossMailbox.Receive()
@@ -182,27 +200,26 @@ let boss =
                     | "push-sum" -> nodeActArr.[0] <! PUSHSUM (0.0,1.0)
                     | _ -> bossMailbox.Sender() <! "Wrong Algorithm Type"
                     
-                | GDONE->    
+                | GOSSIPDONE ->    
                     count <- count + 1
+                    printfn "count %i" count
                     if count = numNodes then
                         printfn "GOSSIP DONE"
                         printfn "Time taken is %u" (Environment.TickCount64 - globalTime)
                         Environment.Exit 1
                 
-                | PDONE (str, id, ratio) ->
-                    // count <- count + 1
-                    // keepTrack.[id] <- ratio
-                    // let threshold:int = int(0.95 * n)
-                    // if count = n then 
-                    //     printfn "Master Done"
-                    //     let time = Environment.TickCount - globalTime
+                | PUSHSUMDONE (id, ratio) ->
+                    count <- count + 1
+                    keepTrack.Add(id, ratio)
+                    if count = numNodes then 
+                        printfn "Master Done"
+                        let time = Environment.TickCount64 - globalTime
 
-                    //     for i in 0 .. (n - 1) do
-                    //         printfn "Node %u ratio is %u" i keepTrack.[i]
+                        for i in 0 .. (numNodes - 1) do
+                            printfn "Node %i ratio is %f" i keepTrack.[i]
                         
-                    //     printfn "Time token is %u" time
-                    //     Environment.Exit 1
-                    printfn "pdone"
+                        printfn "Time token is %u" time
+                        Environment.Exit 1
                 
                 return! bossLoop()
             }
