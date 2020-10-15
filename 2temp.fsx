@@ -10,15 +10,16 @@ open Akka.TestKit
 
 type BossMessage = 
     | START of int * string * string
+    | Gossiping of string
+    | AddGossipNode of int
     | GOSSIPDONE
     | PUSHSUMDONE of int * double
 
 type NodeType = 
     | INIT of int list * int
     | GOSSIP of string
-    | GOSSIPMYSELF of string
+    | GossipAgain of string
     | PUSHSUM of double * double 
-    | GDONE of int * string
     | PSDONE of int * double * double
 
 // let system = System.create "system" (Configuration.defaultConfig())
@@ -93,7 +94,6 @@ let node (nodeMailbox:Actor<NodeType>) =
     let mutable pushCount: int = 1
     let mutable flag: int = 0
 
-
     let rec loop () = actor {
         let! (msg: NodeType) = nodeMailbox.Receive()
 
@@ -105,33 +105,24 @@ let node (nodeMailbox:Actor<NodeType>) =
             
         | GOSSIP str ->
             if count < 10 then 
-                count <- count + 1
+                if count = 0 then    
+                    bossActor <! AddGossipNode nodeIndex
 
-                if count = 10 then
-                    bossActor <! GOSSIPDONE
+                count <- count + 1
                 
                 let random:int = Random().Next(neighbors.Length)
                 let nei:int = neighbors.[random]
-
                 let neighborActor = select ("akka://FSharp/user/node" + string nei) system
-                let selfActor = select ("akka://FSharp/user/node" + string nodeIndex) system
                 neighborActor <! GOSSIP str
-                selfActor <! GOSSIPMYSELF str
             else
-                let selfActor = select ("akka://FSharp/user/node" + string nodeIndex) system
-                selfActor <! GDONE (nodeIndex, str)
+                bossActor <! GOSSIPDONE
 
-        | GOSSIPMYSELF str ->
-            let random:int = Random().Next(neighbors.Length)
-            let nei:int = neighbors.[random]
-            let neighborActor = select ("akka://FSharp/user/node" + string nei) system
-            neighborActor <! GOSSIP str
-
-        | GDONE (idx, str) -> 
-            let random:int = Random().Next(neighbors.Length)
-            let nei:int = neighbors.[random]
-            let neighborActor = select ("akka://FSharp/user/node" + string nei) system
-            neighborActor <! GOSSIP str
+        | GossipAgain str ->
+            if count < 10 then
+                let random:int = Random().Next(neighbors.Length)
+                let nei:int = neighbors.[random]
+                let neighborActor = select ("akka://FSharp/user/node" + string nei) system
+                neighborActor <! GOSSIP str
 
         | PUSHSUM (sum, weight) ->
             if flag = 0 then
@@ -180,6 +171,11 @@ let boss =
         let mutable count = 0
         let mutable numNodes = 0
         let mutable keepTrack = System.Collections.Generic.Dictionary<int,double>()
+
+        let mutable lastTimestamp = Environment.TickCount64
+        let gossipPeriod = 100
+        let mutable actNodeArr: int [] = Array.empty
+
         let rec bossLoop() =
             actor {
                 let! (msg: BossMessage) = bossMailbox.Receive()
@@ -196,13 +192,29 @@ let boss =
                         nodeActArr.[i] <! INIT (topoMap.[i], i)
                     
                     match a with
-                    | "gossip" -> nodeActArr.[0] <! GOSSIP "Hello!"
+                    | "gossip" -> 
+                        nodeActArr.[0] <! GOSSIP "Hello!"
+                        lastTimestamp <- Environment.TickCount64
+                        while true do
+                            if (Environment.TickCount64 - lastTimestamp) >= int64(gossipPeriod) then
+                                lastTimestamp <- Environment.TickCount64
+                                gossipBoss <! Gossiping "Fire!"
+                                
                     | "push-sum" -> nodeActArr.[0] <! PUSHSUM (0.0,1.0)
                     | _ -> bossMailbox.Sender() <! "Wrong Algorithm Type"
+
+                | AddGossipNode idx ->
+                    actNodeArr <- Array.append actNodeArr [|idx|]
+           
+                | Gossiping str ->
+                    if actNodeArr.Length <> 0 then 
+                        for index in actNodeArr do
+                            let nodeAct = select ("akka://Gossip/user/node" + string index) system
+                            nodeAct <! GossipAgain str     
                     
-                | GOSSIPDONE ->    
+                | GOSSIPDONE index->   
+                    actNodeArr <- Array.filter ((<>) index) actNodeArr 
                     count <- count + 1
-                    printfn "count %i" count
                     if count = numNodes then
                         printfn "GOSSIP DONE"
                         printfn "Time taken is %u" (Environment.TickCount64 - globalTime)
@@ -240,12 +252,3 @@ let main() =
     0
 
 main()
-
-// async {
-//     let args = System.Environment.GetCommandLineArgs()
-//     let numsOfNodes = int args.[3]
-//     let topology = string args.[4]
-//     let alg = string args.[5]
-//     let! response = boss <? START (numsOfNodes, topology, alg)
-//     printfn "%s" response
-// } |> Async.RunSynchronously
