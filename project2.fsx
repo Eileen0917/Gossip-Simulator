@@ -202,7 +202,7 @@ let boss =
                     
                 | GOSSIPDONE ->    
                     count <- count + 1
-                    printfn "count %i" count
+                    // printfn "count %i" count
                     if count = numNodes then
                         printfn "GOSSIP DONE"
                         printfn "Time taken is %u" (Environment.TickCount64 - globalTime)
@@ -218,7 +218,7 @@ let boss =
                         for i in 0 .. (numNodes - 1) do
                             printfn "Node %i ratio is %f" i keepTrack.[i]
                         
-                        printfn "Time token is %u" time
+                        printfn "Time taken is %u" time
                         Environment.Exit 1
                 
                 return! bossLoop()
@@ -240,12 +240,3 @@ let main() =
     0
 
 main()
-
-// async {
-//     let args = System.Environment.GetCommandLineArgs()
-//     let numsOfNodes = int args.[3]
-//     let topology = string args.[4]
-//     let alg = string args.[5]
-//     let! response = boss <? START (numsOfNodes, topology, alg)
-//     printfn "%s" response
-// } |> Async.RunSynchronously
